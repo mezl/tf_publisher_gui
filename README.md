@@ -41,7 +41,7 @@ Run with default frame
 rosrun tf_publisher_gui tf_publisher_gui 
 ```
 
-Run with pecify parent and child frame 
+Run with specifying parent and child frame  
 ```
 rosrun tf_publisher_gui tf_publisher_gui _parent_frame:=/base_link _child_frame:=/camera_link
 ```
