@@ -9,7 +9,8 @@ I add some convenience feature for better usage.
 
 Here is how it looks of my version:
 
-## <img alt="tf_publisher_gui" src="https://imgur.com/bfS1lDF">
+<img src="https://imgur.com/bfS1lDF"/>
+!(image)[https://imgur.com/bfS1lDF]
 
 ## Features
 
