@@ -1,0 +1,347 @@
+#!/usr/bin/python
+
+# based on joint_state_publisher by David Lu!!
+
+import roslib; roslib.load_manifest('tf_publisher_gui')
+import rospy
+import wx
+import tf
+from math import pi
+from threading import Thread
+import sys
+import time
+RANGE = 10000
+
+class TfPublisher():
+    def __init__(self):
+
+        self.parent_links = {}
+        self.loadAllFrameList()
+        if len(self.parent_links) == 0:
+            print("No TF Data...")
+            sys.exit(-1)
+        default_parent = self.parent_links.keys()[0]
+        default_child = self.parent_links[default_parent][0]
+        self.parent_frame = rospy.get_param('~parent_frame',default_parent)
+        self.child_frame = rospy.get_param('~child_frame',default_child)
+
+        self.elements = {}
+        self.element_list = [] # for maintaining the original order of the elements
+        self.default_value = {'x':0.0,'y':0.0,'z':0.0,'roll':0.0,'pitch':0.0,'yaw':0.0}
+
+        for name in ['x', 'y', 'z']:
+            element = {'min':-2.0, 'max':2.0, 'zero':0.0, 'value':0.0}
+            self.elements[name] = element
+            self.element_list.append(name)
+
+        for name in ['roll', 'pitch', 'yaw']:
+            element = {'min':-pi, 'max':pi, 'zero':0.0, 'value':0.0}
+            self.elements[name] = element
+            self.element_list.append(name)
+
+        # load all frame list
+
+        rospy.loginfo("Default link %s => %s" %(self.parent_frame,self.child_frame))
+
+
+        # save original tf as default value
+        self.load_default()
+
+        
+
+    def loop(self):
+        hz = rospy.get_param("~rate", 10) # 10hz
+        r = rospy.Rate(hz) 
+
+        
+        # Publish TF messages
+        while not rospy.is_shutdown():
+            br = tf.TransformBroadcaster()
+
+            br.sendTransform((self.elements['x']['value'], self.elements['y']['value'], self.elements['z']['value']),
+                             tf.transformations.quaternion_from_euler(
+                                self.elements['roll']['value'],
+                                self.elements['pitch']['value'],
+                                self.elements['yaw']['value']),
+                             rospy.Time.now(),
+                             self.child_frame,
+                             self.parent_frame)
+
+            r.sleep()
+    def loadAllFrameList(self):
+        listener = tf.TransformListener(rospy.Duration(10))
+        counter = 0
+        while counter < 5:
+            parent_links = self.parseFrameString(listener.allFramesAsDot())
+            if len(parent_links.keys()) > 0:
+                self.parent_links = parent_links
+                return
+
+            rospy.loginfo("Waiting for TF..")
+            counter +=1
+            time.sleep(1)
+        print("No TF Data Available")
+        
+
+
+    def load_default(self):
+        self.load_link(self.parent_frame,self.child_frame)
+    def load_link(self,parent,child):
+
+        listener = tf.TransformListener()
+        trans = None
+        rot = None
+
+        rospy.loginfo("Loading TF between %s => %s" %(parent,child))
+        if not listener.frameExists(parent[1:]): # no '/'
+            rospy.loginfo("Parent Frame not exist: %s" %(parent))
+            return
+        if not listener.frameExists(child[1:]):# no '/'
+            rospy.loginfo("Child not exist %s" %(child))
+            return
+
+        listener.waitForTransform(parent, child, rospy.Time(0), rospy.Duration(5))
+        try:
+            (trans,rot) = listener.lookupTransform(parent, child, rospy.Time(0))
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            print("Get TF ERROR")
+            return  
+        euler = tf.transformations.euler_from_quaternion(rot)
+        print("Trans",trans,"rot",euler)
+        for i,name in enumerate(['x', 'y', 'z']):
+            self.default_value[name] = trans[i]
+        for i,name in enumerate(['roll', 'pitch', 'yaw']):
+            self.default_value[name] = euler[i]
+
+    def parseFrameString(self,str):
+        alljoints = []
+        for line in str.splitlines():
+            joint = line.partition('[')[0]
+            p,c = self.getParentChild(joint)
+            alljoints.append(joint)
+        alljoints = alljoints[1:-2] #remove first and last item
+        parent_links = {}
+        for j in alljoints:
+            p,c = self.getParentChild(j)
+            if p in parent_links.keys():
+                parent_links[p].append(c)
+            else:
+                parent_links[p] =[c]
+        return parent_links
+
+    def getParentChild(self,joint):
+        parent, sep, child = joint.partition(' -> ')
+        return ('/'+parent.replace('"',''),'/'+child.replace('"',''))
+    def loadJoint(self,joint):
+        p,c = self.getParentChild(joint)
+        self.parent_frame = p 
+        self.child_frame = c
+        self.load()#reload default value
+
+class TfPublisherGui(wx.Frame):
+    def __init__(self, title, tfp):
+        wx.Frame.__init__(self, None, -1, title, (-1, -1));
+        self.tfp = tfp
+        self.element_map = {}
+        panel = wx.Panel(self, wx.ID_ANY);
+        box = wx.BoxSizer(wx.VERTICAL)
+        font = wx.Font(9, wx.SWISS, wx.NORMAL, wx.BOLD)
+        
+        ### tf parent/child link ###
+        links = tfp.parent_links
+        row_link = wx.BoxSizer(wx.HORIZONTAL)
+
+        label_parent = wx.StaticText(panel, -1, "parent: ", style=wx.ALIGN_CENTRE_HORIZONTAL)
+        label_parent.SetFont(font)            
+        row_link.Add(label_parent, 2, wx.ALIGN_CENTER_VERTICAL)        
+        self.parent_link = wx.Choice(panel, -1, choices=links.keys())
+        self.parent_link.Bind(wx.EVT_CHOICE,self.choice_event)
+        row_link.Add(self.parent_link,-1,wx.EXPAND)
+        box.Add(row_link, -1, wx.EXPAND)
+
+        #row_link = wx.GridSizer(1,2)
+        row_link = wx.BoxSizer(wx.HORIZONTAL)
+        label_child = wx.StaticText(panel, -1, "child:", style=wx.ALIGN_CENTRE_HORIZONTAL)
+        label_child.SetFont(font)            
+        self.child_link = wx.Choice(panel, -1, choices=[])
+        self.child_link.Bind(wx.EVT_CHOICE,self.choice2_event)
+        row_link.Add(label_child, 2, wx.ALIGN_CENTER_VERTICAL)
+        row_link.Add(self.child_link,-1,wx.EXPAND)
+        box.Add(row_link, -1, wx.EXPAND)
+
+        if tfp.parent_frame in links.keys():
+            self.parent_link.SetSelection(self.parent_link.FindString(tfp.parent_frame))
+            clinks = links[tfp.parent_frame]
+            self.child_link.AppendItems(clinks)
+            if tfp.child_frame in clinks:
+                self.child_link.SetSelection(self.child_link.FindString(tfp.child_frame))
+            else:
+                self.child_link.SetSelection(0)
+
+        else:
+            self.child_link.AppendItems(links[links.keys()[0]])
+            self.child_link.SetSelection(0)
+            self.parent_link.SetSelection(0)
+        ### Sliders ###
+        for name in self.tfp.element_list:
+            element = self.tfp.elements[name]
+
+            if element['min'] == element['max']:
+                continue
+
+            row = wx.GridSizer(1,4)
+
+            btnMinus = wx.Button(panel, 1, '-',name=name)
+            row.Add(btnMinus, 1, wx.ALIGN_RIGHT)
+            wx.EVT_BUTTON(btnMinus, 1, self.minus_event)
+
+            label = wx.StaticText(panel, -1, name, style=wx.ALIGN_CENTRE_HORIZONTAL)
+            label.SetFont(font)            
+            row.Add(label, 2, wx.ALIGN_CENTER_VERTICAL)
+
+
+            btnPlus = wx.Button(panel, 1, '+',name=name)
+            wx.EVT_BUTTON(btnPlus, 1, self.plus_event)
+            row.Add(btnPlus, 3, wx.ALIGN_LEFT)
+
+
+            display = wx.TextCtrl (panel, value=str(0), 
+                        style=wx.TE_READONLY | wx.ALIGN_RIGHT)
+
+            row.Add(display, flag= wx.ALIGN_RIGHT| wx.ALIGN_CENTER_VERTICAL)
+            box.Add(row, 1, wx.EXPAND)
+
+
+            slider = wx.Slider(panel, -1, RANGE/2, 0, RANGE, 
+                        style= wx.SL_AUTOTICKS | wx.SL_HORIZONTAL)
+            slider.SetFont(font)
+            box.Add(slider, 2, wx.EXPAND|wx.ALIGN_CENTER_VERTICAL)
+
+            self.element_map[name] = {'slidervalue':0, 'display':display, 
+                                    'slider':slider, 'element':element}
+
+        ### Buttons ###
+        self.ctrbutton = wx.Button(panel, 1, 'Zero')
+        self.Bind(wx.EVT_SLIDER, self.sliderUpdate)
+        wx.EVT_BUTTON(self.ctrbutton, 1, self.center_event)
+        box.Add(self.ctrbutton, 0, wx.EXPAND)
+        
+        self.loadbutton = wx.Button(panel, 1, 'Load Default')
+        wx.EVT_BUTTON(self.loadbutton, 1, self.load_event)
+        box.Add(self.loadbutton, 0, wx.EXPAND)
+        panel.SetSizer(box)
+        box.Fit(self)
+
+        self.load()
+        self.update_values()
+
+
+    def update_values(self):
+        for (name,element_info) in self.element_map.items():
+            purevalue = element_info['slidervalue']
+            element = element_info['element']
+            value = self.sliderToValue(purevalue, element)
+            element['value'] = value
+            element_info['slider'].SetValue(purevalue)
+            element_info['display'].SetValue("%.2f"%value)
+            if name in ["roll","pitch","yaw"]:
+                deg = value / pi * 180
+                element_info['display'].SetValue("%3d(%.2f)"%(deg,value))
+
+    def inc_dec_value(self,name,sign):
+        offset = 0.01 # xyz 10mm
+        if name in ["roll","pitch","yaw"]:
+            offset = pi*0.5 # rpy 90 deg
+        element_info = self.element_map[name]
+        element = element_info['element']
+
+        newValue = element['value'] + offset*sign
+        # round over angle from range to -pi ~ pi
+        if name in ["roll","pitch","yaw"]:
+            if newValue > pi:
+                newValue-= 2*pi
+            if newValue < -pi:
+                newValue+= 2*pi
+        element_info['slidervalue'] = self.valueToSlider(newValue, element)
+        self.update_values()
+
+    def load_link(self, parent, child):
+        self.tfp.load_link(parent,child)
+        self.load()
+        self.tfp.parent_frame = parent
+        self.tfp.child_frame = child
+    def choice_event(self, event):
+        parent = event.GetEventObject().GetStringSelection()
+        links = self.tfp.parent_links
+        self.child_link.Clear()
+        self.child_link.AppendItems(links[parent])
+        self.child_link.SetSelection(0)
+        child = self.child_link.GetString(0)
+        self.load_link(parent,child)
+
+    def choice2_event(self, event):
+        child = event.GetEventObject().GetStringSelection()
+        index = self.parent_link.GetSelection()
+        parent = self.parent_link.GetString(index)
+        self.load_link(parent,child)
+
+    def plus_event(self, event):
+        name = event.GetEventObject().GetName()
+        self.inc_dec_value(name,1.0)
+        
+    def minus_event(self, event):
+        name = event.GetEventObject().GetName()
+        self.inc_dec_value(name,-1.0)
+
+
+    def center_event(self, event):
+        rospy.loginfo("Center Event")
+        self.center()
+    def load_event(self, event):
+        rospy.loginfo("Load Event")
+        self.load()
+
+    def load(self):
+        rospy.loginfo("Load TF from URDF")
+        default = self.tfp.default_value
+
+        for (name,element_info) in self.element_map.items():
+            element = element_info['element']
+            element_info['slidervalue'] = self.valueToSlider(default[name], element)
+        self.update_values()
+
+    def center(self):
+        rospy.loginfo("Centering")
+        for (name,element_info) in self.element_map.items():
+            element = element_info['element']
+            element_info['slidervalue'] = self.valueToSlider(element['zero'], element)
+        self.update_values()
+
+    def sliderUpdate(self, event):
+        for (name,element_info) in self.element_map.items():
+            element_info['slidervalue'] = element_info['slider'].GetValue()
+        self.update_values()
+
+    def valueToSlider(self, value, element):
+        return (value - element['min']) * float(RANGE) / (element['max'] - element['min'])
+        
+    def sliderToValue(self, slider, element):
+        pctvalue = slider / float(RANGE)
+        return element['min'] + (element['max']-element['min']) * pctvalue
+
+
+if __name__ == '__main__':
+    try:
+        rospy.init_node('tf_publisher_gui')
+        tfp = TfPublisher()
+
+        app = wx.App()
+        gui = TfPublisherGui("TF Publisher", tfp)
+        gui.Show()
+        Thread(target=app.MainLoop).start()         
+        tfp.loop()
+        
+    except rospy.ROSInterruptException: pass
+    except Exception as e:
+        print(e)
+
